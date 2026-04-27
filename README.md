@@ -35,7 +35,7 @@ Append `le` or `be` to any base for explicit endianness (default: `be`).
 Examples: `16le`, `10be`, `2le`, `8be`
 
 Omitting `-i` or `-o` means raw bytes. Base 10 treats the whole input as a
-single integer (max uint64, max 8 bytes).
+single arbitrarily large integer.
 
 ## Examples
 
@@ -61,9 +61,14 @@ cat file.bin | base -o 16             # dump binary file as hex
 | 10   | decimal integer (whole input) | `26729` | ✗ |
 | 16   | hex, 2 chars per byte | `6869` | ✓ |
 
+Base 10 does not roundtrip because leading zero bytes are lost — `0x0068` and
+`0x68` both encode to `104`, so decoding `104` back to bytes has no way to
+recover the leading zero.
+
 Endianness affects byte order. `be` (default) reads left to right; `le` reverses
 the byte order. For base 10 this changes the numeric value; for 2, 8, and 16 it
 changes the order bytes are encoded or decoded.
+
 
 ## License
 
