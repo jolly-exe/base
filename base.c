@@ -10,7 +10,6 @@
 
 #define PROGRAM_NAME "base"
 #define VERSION "1.0"
-#define MAX_INPUT (1 << 20)
 
 static void usage(int status);
 static void version(void);
@@ -66,12 +65,24 @@ static int parse_base(const char *s, basespec *out)
 
 static unsigned char *read_stdin(size_t *out_len)
 {
-    unsigned char *buf = malloc(MAX_INPUT + 1);
+    size_t cap = 65536;
+    size_t len = 0;
+    unsigned char *buf = malloc(cap);
     if (!buf) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
-    size_t n = fread(buf, 1, MAX_INPUT + 1, stdin);
-    if (ferror(stdin)) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
-    if (n > MAX_INPUT) die("input exceeds 1 MiB limit");
-    *out_len = n;
+
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len, stdin)) > 0) {
+        len += n;
+        if (len == cap) {
+            cap *= 2;
+            unsigned char *tmp = realloc(buf, cap);
+            if (!tmp) { free(buf); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+            buf = tmp;
+        }
+    }
+    if (ferror(stdin)) { free(buf); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+
+    *out_len = len;
     return buf;
 }
 
@@ -95,57 +106,127 @@ static void reverse_bytes(unsigned char *buf, size_t len)
     }
 }
 
+/* bignum decimal: digits stored little-endian (digits[0] = least significant) */
 static void encode_base10(const unsigned char *buf, size_t len, int endian)
 {
     if (len == 0) die("empty input");
-    if (len > 8)  die("input too large for base 10 (max 8 bytes)");
 
-    uint64_t val = 0;
-    if (endian == 'b') {
-        for (size_t i = 0; i < len; i++)
-            val = (val << 8) | buf[i];
-    } else {
-        for (size_t i = len; i > 0; i--)
-            val = (val << 8) | buf[i - 1];
+    /* result can be at most ceil(len * 8 * log10(2)) + 1 decimal digits */
+    size_t maxdigits = (size_t)(len * 2.41) + 4;
+    unsigned char *digits = calloc(maxdigits, 1);
+    if (!digits) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    size_t ndigits = 1; /* start with 0 */
+
+    /* process bytes in big-endian order regardless of input endian */
+    for (size_t bi = 0; bi < len; bi++) {
+        unsigned byte = (endian == 'b') ? buf[bi] : buf[len - 1 - bi];
+
+        /* multiply existing number by 256 */
+        unsigned carry = 0;
+        for (size_t i = 0; i < ndigits; i++) {
+            unsigned v = digits[i] * 256 + carry;
+            digits[i] = v % 10;
+            carry = v / 10;
+        }
+        while (carry) {
+            if (ndigits >= maxdigits) { free(digits); die("bignum overflow"); }
+            digits[ndigits++] = carry % 10;
+            carry /= 10;
+        }
+
+        /* add current byte */
+        carry = byte;
+        for (size_t i = 0; i < ndigits && carry; i++) {
+            unsigned v = digits[i] + carry;
+            digits[i] = v % 10;
+            carry = v / 10;
+        }
+        while (carry) {
+            if (ndigits >= maxdigits) { free(digits); die("bignum overflow"); }
+            digits[ndigits++] = carry % 10;
+            carry /= 10;
+        }
     }
-    printf("%" PRIu64, val);
+
+    /* print most-significant first */
+    for (size_t i = ndigits; i > 0; i--)
+        putchar('0' + digits[i - 1]);
+
+    free(digits);
 }
 
+/* decode arbitrarily large decimal string to raw bytes */
 static unsigned char *decode_base10(const unsigned char *in, size_t in_len,
                                      int endian, size_t *out_len)
 {
     char *clean = strip_ws(in, in_len);
     if (clean[0] == '\0') die("empty input");
 
-    char *end;
-    errno = 0;
-    uint64_t val = strtoull(clean, &end, 10);
+    size_t dlen = strlen(clean);
+    for (size_t i = 0; i < dlen; i++)
+        if (!isdigit((unsigned char)clean[i])) { die_fmt("invalid input: %s", clean); }
 
-    if (errno == ERANGE) { free(clean); die("value out of range (max uint64)"); }
-    if (*end != '\0')    { die_fmt("invalid input: %s", clean); }
+    /* work with decimal digit array (mutable copy) */
+    unsigned char *dec = malloc(dlen + 1);
+    if (!dec) { free(clean); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    for (size_t i = 0; i < dlen; i++) dec[i] = clean[i] - '0';
     free(clean);
 
-    size_t len = 1;
-    uint64_t tmp = val;
-    while (tmp > 0xff) { tmp >>= 8; len++; }
+    /* result bytes stored in a growing buffer (little-endian during build) */
+    size_t bcap = dlen / 2 + 2;
+    unsigned char *bytes = calloc(bcap, 1);
+    if (!bytes) { free(dec); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    size_t blen = 0;
 
-    unsigned char *out = malloc(len + 1);
-    if (!out) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    /* repeatedly divide dec[] by 256, collect remainders as bytes */
+    size_t start = 0;
+    while (start < dlen) {
+        /* check all remaining digits are zero */
+        int all_zero = 1;
+        for (size_t i = start; i < dlen; i++) if (dec[i]) { all_zero = 0; break; }
+        if (all_zero) break;
 
-    if (endian == 'b') {
-        for (size_t i = len; i > 0; i--) {
-            out[i - 1] = val & 0xff;
-            val >>= 8;
+        /* divide dec[start..dlen) by 256 in place */
+        unsigned rem = 0;
+        size_t new_start = start;
+        int leading = 1;
+        for (size_t i = start; i < dlen; i++) {
+            unsigned cur = rem * 10 + dec[i];
+            dec[i] = cur / 256;
+            rem = cur % 256;
+            if (leading && dec[i] == 0) new_start = i + 1;
+            else leading = 0;
         }
-    } else {
-        for (size_t i = 0; i < len; i++) {
-            out[i] = val & 0xff;
-            val >>= 8;
+        if (leading) new_start = dlen;
+
+        /* grow if needed */
+        if (blen >= bcap) {
+            bcap *= 2;
+            unsigned char *tmp = realloc(bytes, bcap);
+            if (!tmp) { free(dec); free(bytes); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+            bytes = tmp;
         }
+        bytes[blen++] = (unsigned char)rem;
+        start = new_start;
     }
 
-    out[len] = '\0';
-    *out_len = len;
+    free(dec);
+
+    if (blen == 0) { bytes[blen++] = 0; }
+
+    /* bytes[] is currently little-endian; output according to requested endian */
+    unsigned char *out = malloc(blen + 1);
+    if (!out) { free(bytes); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+
+    if (endian == 'b') {
+        for (size_t i = 0; i < blen; i++) out[i] = bytes[blen - 1 - i];
+    } else {
+        memcpy(out, bytes, blen);
+    }
+    free(bytes);
+
+    out[blen] = '\0';
+    *out_len = blen;
     return out;
 }
 
