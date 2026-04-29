@@ -7,8 +7,16 @@ echo -n "hello" | base -o 16
 # 68656c6c6f
 ```
 
+## Dependencies
+
+- Debian/Ubuntu: `apt install gcc git`
+- Arch: `pacman -S gcc git`
+- Fedora: `dnf install gcc git`
+- Termux: `pkg install clang git`
+
 ## Install
 
+**System-wide:**
 ```sh
 git clone https://github.com/jolly-exe/base
 cd base
@@ -16,7 +24,29 @@ gcc -O2 -o base base.c
 sudo install -m755 base /usr/local/bin/
 ```
 
-To uninstall: `sudo rm /usr/local/bin/base`
+**Local (no sudo):**
+```sh
+git clone https://github.com/jolly-exe/base
+cd base
+gcc -O2 -o base base.c
+mkdir -p ~/.local/bin
+install -m755 base ~/.local/bin/
+```
+
+Make sure `~/.local/bin` is in your `PATH` (add it to your shell's rc file, e.g. `~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`).
+
+**Termux:**
+```sh
+git clone https://github.com/jolly-exe/base
+cd base
+clang -O2 -o base base.c
+install -m755 base ~/../usr/bin/
+```
+
+To uninstall:
+- System-wide: `sudo rm /usr/local/bin/base`
+- Local: `rm ~/.local/bin/base`
+- Termux: `rm ~/../usr/bin/base`
 
 ## Usage
 
