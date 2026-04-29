@@ -3,8 +3,8 @@
 Convert between raw bytes and base 2, 8, 10, or 16.
 
 ```sh
-echo -n "hello" | base -o 16
-# 68656c6c6f
+echo -n "test" | base -o 16
+# 74657374
 ```
 
 ## Dependencies
@@ -70,12 +70,12 @@ single arbitrarily large integer.
 ## Examples
 
 ```sh
-echo -n "hello" | base -o 16          # text to hex
-echo -n "hello" | base -o 16le        # text to hex, little-endian
-echo -n "68656c6c6f" | base -i 16     # hex to text
+echo -n "test" | base -o 16           # text to hex
+echo -n "test" | base -o 16le         # text to hex, little-endian
+echo -n "74657374" | base -i 16       # hex to text
 echo -n "hi" | base -o 2              # text to binary
-echo -n "meow" | base -o 10           # raw bytes to decimal (big-endian)
-echo -n "meow" | base -o 10le         # raw bytes to decimal (little-endian)
+echo -n "test" | base -o 10           # raw bytes to decimal (big-endian)
+echo -n "test" | base -o 10le         # raw bytes to decimal (little-endian)
 echo -n "ff" | base -i 16 -o 10       # hex to decimal: 255
 echo -n "255" | base -i 10 -o 16      # decimal to hex: ff
 echo -n "255" | base -i 10 -o 2       # decimal to binary: 11111111
