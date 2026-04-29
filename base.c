@@ -70,9 +70,6 @@ static void init_tables(void)
 {
     /* hex encode */
     for (int i = 0; i < 256; i++) {
-        HEX_PAIR[i] = (uint16_t)HEX_ENC[i & 0xf] << 8 | HEX_ENC[i >> 4];
-        /* note: stored lo=high-nibble-char, hi=low-nibble-char so we can
-           cast &HEX_PAIR[b] to char* and write 2 bytes in order */
         HEX_PAIR[i] = (uint16_t)(HEX_ENC[i >> 4]) | ((uint16_t)(HEX_ENC[i & 0xf]) << 8);
     }
 
@@ -184,6 +181,44 @@ static unsigned char *read_stdin_full(size_t *out_len)
     if (ferror(stdin)) { free(buf); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
     *out_len = len;
     return buf;
+}
+
+/* ── shared decode helper (base 2/8/16 → raw bytes) ─────────────────────── */
+
+static unsigned char *decode_buf(const unsigned char *in, size_t in_len,
+                                  basespec spec, size_t *out_len)
+{
+    size_t dpb   = (spec.base == 2) ? 8 : (spec.base == 8) ? 3 : 2;
+    int    shift = (spec.base == 2) ? 1 : (spec.base == 8) ? 3 : 4;
+    int    acc_need = (int)(dpb * shift);
+    const uint8_t *dtab = (spec.base == 2) ? BIN_DEC :
+                          (spec.base == 8) ? OCT_DEC : HEX_DEC;
+
+    size_t rcap = in_len / dpb + 2;
+    unsigned char *out = malloc(rcap);
+    if (!out) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    size_t rlen = 0;
+
+    unsigned acc = 0; int acc_bits = 0;
+    for (size_t i = 0; i < in_len; i++) {
+        uint8_t d = dtab[(unsigned char)in[i]];
+        if (d == 0xff) continue;
+        acc = (acc << shift) | d;
+        acc_bits += shift;
+        if (acc_bits == acc_need) {
+            out[rlen++] = (unsigned char)(acc & 0xff);
+            acc = 0; acc_bits = 0;
+        }
+    }
+
+    if (spec.endian == 'l') {
+        for (size_t i = 0; i < rlen / 2; i++) {
+            unsigned char t = out[i]; out[i] = out[rlen-1-i]; out[rlen-1-i] = t;
+        }
+    }
+
+    *out_len = rlen;
+    return out;
 }
 
 /* ── streaming encode (raw → base 2/8/16) ───────────────────────────────── */
@@ -305,21 +340,9 @@ static void encode_base10(const unsigned char *buf, size_t len, int endian)
     for (size_t bi = 0; bi < len; bi++) {
         unsigned byte = (endian == 'b') ? buf[bi] : buf[len - 1 - bi];
 
-        unsigned carry = 0;
+        unsigned carry = byte;
         for (size_t i = 0; i < ndigits; i++) {
             unsigned v = digits[i] * 256 + carry;
-            digits[i] = v % 10;
-            carry = v / 10;
-        }
-        while (carry) {
-            if (ndigits >= maxdigits) { free(digits); die("bignum overflow"); }
-            digits[ndigits++] = carry % 10;
-            carry /= 10;
-        }
-
-        carry = byte;
-        for (size_t i = 0; i < ndigits && carry; i++) {
-            unsigned v = digits[i] + carry;
             digits[i] = v % 10;
             carry = v / 10;
         }
@@ -482,11 +505,11 @@ static void usage(int status)
 "Bases 2, 8, 16 operate byte-by-byte; endianness controls byte order.\n"
 "\n"
 "Examples:\n"
-"  echo -n 'hello'    | %s -o 16\n"
-"  echo -n 'hello'    | %s -o 16le\n"
-"  echo -n '6869'     | %s -i 16\n"
+"  echo -n 'test'     | %s -o 16\n"
+"  echo -n 'test'     | %s -o 16le\n"
+"  echo -n '74657374' | %s -i 16\n"
 "  echo -n 'ff'       | %s -i 16 -o 10\n"
-"  echo -n 'meow'     | %s -o 10le\n"
+"  echo -n 'test'     | %s -o 10le\n"
 "  echo -n '255'      | %s -i 10 -o 16\n"
 "\n",
     PROGRAM_NAME,
@@ -567,34 +590,8 @@ int main(int argc, char *argv[])
         } else {
             /* decode non-10 base first */
             size_t in_len; unsigned char *in_buf = read_stdin_full(&in_len);
-            /* decode into raw bytes via stream_decode path but need buffer */
-            /* re-use full-buffer decode */
-            size_t dpb = (ispec.base == 2) ? 8 : (ispec.base == 8) ? 3 : 2;
-            const uint8_t *dtab = (ispec.base == 2) ? BIN_DEC :
-                                  (ispec.base == 8)  ? OCT_DEC : HEX_DEC;
-            int shift = (ispec.base == 2) ? 1 : (ispec.base == 8) ? 3 : 4;
-            int acc_need = (int)(dpb * shift);
-            raw_len = 0;
-            size_t rcap = in_len / dpb + 2;
-            raw = malloc(rcap);
-            if (!raw) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
-            unsigned acc = 0; int acc_bits = 0;
-            for (size_t i = 0; i < in_len; i++) {
-                uint8_t d = dtab[(unsigned char)in_buf[i]];
-                if (d == 0xff) continue;
-                acc = (acc << shift) | d;
-                acc_bits += shift;
-                if (acc_bits == acc_need) {
-                    raw[raw_len++] = (unsigned char)(acc & 0xff);
-                    acc = 0; acc_bits = 0;
-                }
-            }
+            raw = decode_buf(in_buf, in_len, ispec, &raw_len);
             free(in_buf);
-            if (ispec.endian == 'l') {
-                for (size_t i = 0; i < raw_len / 2; i++) {
-                    unsigned char t = raw[i]; raw[i] = raw[raw_len-1-i]; raw[raw_len-1-i] = t;
-                }
-            }
         }
         encode_base10(raw, raw_len, ospec.endian);
         free(raw);
@@ -651,31 +648,21 @@ int main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
-    /* base 2/8/16 → base 2/8/16: stream decode into encode */
+    /* base 2/8/16 → base 2/8/16: decode then encode */
     if (i_set && o_set) {
         size_t in_len; unsigned char *in_buf = read_stdin_full(&in_len);
-        size_t dpb = (ispec.base == 2) ? 8 : (ispec.base == 8) ? 3 : 2;
-        const uint8_t *dtab = (ispec.base == 2) ? BIN_DEC :
-                              (ispec.base == 8)  ? OCT_DEC : HEX_DEC;
-        int shift = (ispec.base == 2) ? 1 : (ispec.base == 8) ? 3 : 4;
-        int acc_need = (int)(dpb * shift);
-        unsigned acc = 0; int acc_bits = 0;
-        for (size_t i = 0; i < in_len; i++) {
-            uint8_t d = dtab[(unsigned char)in_buf[i]];
-            if (d == 0xff) continue;
-            acc = (acc << shift) | d;
-            acc_bits += shift;
-            if (acc_bits == acc_need) {
-                unsigned char b = (unsigned char)(acc & 0xff);
-                switch (ospec.base) {
-                    case 16: obuf_write((char *)&HEX_PAIR[b], 2); break;
-                    case 8:  obuf_write(OCT_BYTE[b], 3); break;
-                    case 2:  obuf_write(BIN_BYTE[b], 8); break;
-                }
-                acc = 0; acc_bits = 0;
+        size_t raw_len;
+        unsigned char *raw = decode_buf(in_buf, in_len, ispec, &raw_len);
+        free(in_buf);
+        for (size_t i = 0; i < raw_len; i++) {
+            unsigned char b = raw[i];
+            switch (ospec.base) {
+                case 16: obuf_write((char *)&HEX_PAIR[b], 2); break;
+                case 8:  obuf_write(OCT_BYTE[b], 3); break;
+                case 2:  obuf_write(BIN_BYTE[b], 8); break;
             }
         }
-        free(in_buf);
+        free(raw);
         obuf_flush();
         if (isatty(STDOUT_FILENO)) putchar('\n');
         return EXIT_SUCCESS;
