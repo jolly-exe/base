@@ -36,26 +36,29 @@ jobs:
     if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux glibc static
           - os: ubuntu-latest
             target: linux-glibc-x86_64
             cc: gcc
             cflags: -O2 -static
             arch_pkg: ""
+            musl_cross: ""
 
           - os: ubuntu-latest
             target: linux-glibc-aarch64
             cc: aarch64-linux-gnu-gcc
             cflags: -O2 -static
             arch_pkg: gcc-aarch64-linux-gnu
+            musl_cross: ""
 
           - os: ubuntu-latest
             target: linux-glibc-i686
             cc: i686-linux-gnu-gcc
             cflags: -O2 -static
             arch_pkg: gcc-i686-linux-gnu
+            musl_cross: ""
 
           # Linux musl static
           - os: ubuntu-latest
@@ -63,18 +66,21 @@ jobs:
             cc: x86_64-linux-musl-gcc
             cflags: -O2 -static
             arch_pkg: musl-tools
+            musl_cross: ""
 
           - os: ubuntu-latest
             target: linux-musl-aarch64
             cc: aarch64-linux-musl-gcc
             cflags: -O2 -static
-            arch_pkg: musl-cross
+            arch_pkg: ""
+            musl_cross: aarch64-linux-musl-cross
 
           - os: ubuntu-latest
             target: linux-musl-i686
             cc: i686-linux-musl-gcc
             cflags: -O2 -static
-            arch_pkg: musl-cross
+            arch_pkg: ""
+            musl_cross: i686-linux-musl-cross
 
           # Windows (cross-compiled via mingw)
           - os: ubuntu-latest
@@ -82,6 +88,7 @@ jobs:
             cc: x86_64-w64-mingw32-gcc
             cflags: -O2 -static
             arch_pkg: gcc-mingw-w64-x86-64
+            musl_cross: ""
             ext: .exe
 
           - os: ubuntu-latest
@@ -89,6 +96,7 @@ jobs:
             cc: aarch64-w64-mingw32-gcc
             cflags: -O2 -static
             arch_pkg: gcc-mingw-w64-aarch64
+            musl_cross: ""
             ext: .exe
 
           # macOS
@@ -96,20 +104,30 @@ jobs:
             target: macos-x86_64
             cc: gcc
             cflags: -O2
+            arch_pkg: ""
+            musl_cross: ""
 
           - os: macos-latest
             target: macos-aarch64
             cc: gcc
             cflags: -O2
+            arch_pkg: ""
+            musl_cross: ""
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install cross-compiler
+      - name: Install cross-compiler (apt)
         if: matrix.arch_pkg != ''
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ${{ matrix.arch_pkg }}
+
+      - name: Install cross-compiler (musl.cc)
+        if: matrix.musl_cross != ''
+        run: |
+          curl -sSL https://musl.cc/${{ matrix.musl_cross }}.tgz | tar xz -C /opt
+          echo "/opt/${{ matrix.musl_cross }}/bin" >> "$GITHUB_PATH"
 
       - name: Build
         run: |
@@ -158,3 +176,4 @@ jobs:
           name: v${{ needs.check-version.outputs.version }}
           body: ${{ steps.changelog.outputs.changelog }}
           files: artifacts/*
+          
