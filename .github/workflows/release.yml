@@ -1,9 +1,7 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   check-version:
@@ -92,14 +90,7 @@ jobs:
             zig_target: ""
             ext: .exe
 
-          # macOS
-          - os: macos-13
-            target: macos-x86_64
-            cc: cc
-            cflags: -O2
-            arch_pkg: ""
-            zig_target: ""
-
+          # macOS aarch64 (x86_64 runner too slow, build from source)
           - os: macos-latest
             target: macos-aarch64
             cc: cc
