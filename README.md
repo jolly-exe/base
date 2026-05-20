@@ -16,7 +16,7 @@ echo -n "test" | base -o 16
 
 ## Install
 
-**Prebuilt binaries** for Linux (glibc/musl, x86_64/aarch64/i686), Windows (x86_64), and macOS (x86_64/aarch64) are available on the [releases page](https://github.com/jolly-exe/base/releases).
+**Prebuilt binaries** for Linux (glibc/musl, x86_64/aarch64/i686), Windows (x86_64), and macOS (aarch64) are available on the [releases page](https://github.com/jolly-exe/base/releases).
 
 **System-wide (from source):**
 ```sh
