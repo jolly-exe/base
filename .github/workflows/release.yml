@@ -39,80 +39,73 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux glibc static
           - os: ubuntu-latest
             target: linux-glibc-x86_64
             cc: gcc
             cflags: -O2 -static
             arch_pkg: ""
-            musl_cross: ""
+            zig_target: ""
 
           - os: ubuntu-latest
             target: linux-glibc-aarch64
             cc: aarch64-linux-gnu-gcc
             cflags: -O2 -static
             arch_pkg: gcc-aarch64-linux-gnu
-            musl_cross: ""
+            zig_target: ""
 
           - os: ubuntu-latest
             target: linux-glibc-i686
             cc: i686-linux-gnu-gcc
             cflags: -O2 -static
             arch_pkg: gcc-i686-linux-gnu
-            musl_cross: ""
+            zig_target: ""
 
           # Linux musl static
           - os: ubuntu-latest
             target: linux-musl-x86_64
-            cc: x86_64-linux-musl-gcc
+            cc: musl-gcc
             cflags: -O2 -static
             arch_pkg: musl-tools
-            musl_cross: ""
+            zig_target: ""
 
           - os: ubuntu-latest
             target: linux-musl-aarch64
-            cc: aarch64-linux-musl-gcc
-            cflags: -O2 -static
+            cc: ""
+            cflags: -O2
             arch_pkg: ""
-            musl_cross: aarch64-linux-musl-cross
+            zig_target: aarch64-linux-musl
 
           - os: ubuntu-latest
             target: linux-musl-i686
-            cc: i686-linux-musl-gcc
-            cflags: -O2 -static
+            cc: ""
+            cflags: -O2
             arch_pkg: ""
-            musl_cross: i686-linux-musl-cross
+            zig_target: x86-linux-musl
 
-          # Windows (cross-compiled via mingw)
+          # Windows x86_64 via mingw (aarch64 not available in apt)
           - os: ubuntu-latest
             target: windows-x86_64
             cc: x86_64-w64-mingw32-gcc
             cflags: -O2 -static
             arch_pkg: gcc-mingw-w64-x86-64
-            musl_cross: ""
-            ext: .exe
-
-          - os: ubuntu-latest
-            target: windows-aarch64
-            cc: aarch64-w64-mingw32-gcc
-            cflags: -O2 -static
-            arch_pkg: gcc-mingw-w64-aarch64
-            musl_cross: ""
+            zig_target: ""
             ext: .exe
 
           # macOS
           - os: macos-13
             target: macos-x86_64
-            cc: gcc
+            cc: cc
             cflags: -O2
             arch_pkg: ""
-            musl_cross: ""
+            zig_target: ""
 
           - os: macos-latest
             target: macos-aarch64
-            cc: gcc
+            cc: cc
             cflags: -O2
             arch_pkg: ""
-            musl_cross: ""
+            zig_target: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -123,15 +116,19 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ${{ matrix.arch_pkg }}
 
-      - name: Install cross-compiler (musl.cc)
-        if: matrix.musl_cross != ''
-        run: |
-          curl -sSL https://musl.cc/${{ matrix.musl_cross }}.tgz | tar xz -C /opt
-          echo "/opt/${{ matrix.musl_cross }}/bin" >> "$GITHUB_PATH"
+      - name: Install Zig
+        if: matrix.zig_target != ''
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
 
       - name: Build
         run: |
-          ${{ matrix.cc }} ${{ matrix.cflags }} -o base-${{ matrix.target }}${{ matrix.ext }} base.c
+          if [ -n "${{ matrix.zig_target }}" ]; then
+            zig cc -target ${{ matrix.zig_target }} ${{ matrix.cflags }} -o base-${{ matrix.target }}${{ matrix.ext }} base.c
+          else
+            ${{ matrix.cc }} ${{ matrix.cflags }} -o base-${{ matrix.target }}${{ matrix.ext }} base.c
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
