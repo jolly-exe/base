@@ -51,10 +51,12 @@ To uninstall:
 ## Usage
 
 ```
-base [-i BASE] [-o BASE]
+base [-i BASE] [-o BASE] [-x]
 
   -i BASE       input base  (default: raw bytes)
   -o BASE       output base (default: raw bytes)
+  -x            xor mode: read 'A:B' from stdin, xor decoded bytes
+                (requires -i; A and B must decode to equal length)
   -h, --help    display this help and exit
   -V, --version output version information and exit
 
@@ -80,6 +82,26 @@ echo -n "ff" | base -i 16 -o 10       # hex to decimal: 255
 echo -n "255" | base -i 10 -o 16      # decimal to hex: ff
 echo -n "255" | base -i 10 -o 2       # decimal to binary: 11111111
 cat file.bin | base -o 16             # dump binary file as hex
+```
+
+## XOR
+
+`-x` reads two values from stdin separated by `:` and xors their decoded bytes.
+Requires `-i` (raw input is not supported — there's no way to delimit two raw
+byte streams unambiguously). The output is the xored bytes, written raw or
+re-encoded with `-o`.
+
+Both halves must decode to the same number of bytes, otherwise an error is
+raised. Only the first `:` splits; any additional `:` is invalid for every base
+and is ignored along with other invalid characters (whitespace, etc.).
+
+```sh
+echo -n "74657374:01020304" | base -i 16 -x -o 16      # hex xor: 75677070
+echo -n "11110000:00001111" | base -i 2  -x -o 2       # binary xor: 11111111
+echo -n "377:252"           | base -i 8  -x -o 8       # octal xor: 125
+echo -n "255:170"           | base -i 10 -x -o 10      # decimal xor: 85
+echo -n "ff:aa"             | base -i 16 -x -o 2       # cross-base: 01010101
+echo -n "20:55"             | base -i 16 -x            # raw output: u
 ```
 
 ## Bases

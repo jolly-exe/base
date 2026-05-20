@@ -210,6 +210,7 @@ static unsigned char *decode_buf(const unsigned char *in, size_t in_len,
             acc = 0; acc_bits = 0;
         }
     }
+    if (acc_bits != 0) { free(out); die("incomplete byte in input"); }
 
     if (spec.endian == 'l') {
         for (size_t i = 0; i < rlen / 2; i++) {
@@ -315,6 +316,7 @@ static void stream_decode(basespec spec)
     }
 
     if (ferror(stdin)) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    if (acc_bits != 0) { if (collected) free(collected); die("incomplete byte in input"); }
 
     if (need_collect) {
         /* reverse for LE */
@@ -481,6 +483,83 @@ static void numeric_convert(const unsigned char *in_buf, size_t in_len,
     obuf_flush();
 }
 
+/* ── xor mode (base only, no raw) ────────────────────────────────────────── */
+
+static void do_xor(basespec ispec, basespec ospec, int o_set)
+{
+    size_t in_len;
+    unsigned char *in_buf = read_stdin_full(&in_len);
+
+    /* find first ':' delimiter; subsequent ':' are invalid → ignored */
+    size_t split = (size_t)-1;
+    for (size_t i = 0; i < in_len; i++) {
+        if (in_buf[i] == ':') { split = i; break; }
+    }
+    if (split == (size_t)-1) {
+        free(in_buf);
+        die("-x requires two values separated by ':'");
+    }
+
+    unsigned char *left  = in_buf;
+    size_t left_len      = split;
+    unsigned char *right = in_buf + split + 1;
+    size_t right_len     = in_len - split - 1;
+
+    size_t a_len, b_len;
+    unsigned char *a, *b;
+
+    if (ispec.base == 10) {
+        a = decode_base10(left,  left_len,  ispec.endian, &a_len);
+        b = decode_base10(right, right_len, ispec.endian, &b_len);
+    } else {
+        a = decode_buf(left,  left_len,  ispec, &a_len);
+        b = decode_buf(right, right_len, ispec, &b_len);
+    }
+    free(in_buf);
+
+    if (a_len != b_len) {
+        free(a); free(b);
+        die("xor operands have different lengths");
+    }
+    if (a_len == 0) {
+        free(a); free(b);
+        die("empty input");
+    }
+
+    /* xor in place into a */
+    for (size_t i = 0; i < a_len; i++) a[i] ^= b[i];
+    free(b);
+
+    /* output */
+    if (!o_set) {
+        fwrite(a, 1, a_len, stdout);
+    } else if (ospec.base == 10) {
+        encode_base10(a, a_len, ospec.endian);
+    } else {
+        if (ospec.endian == 'b') {
+            for (size_t i = 0; i < a_len; i++) {
+                unsigned char by = a[i];
+                switch (ospec.base) {
+                    case 16: obuf_write((char *)&HEX_PAIR[by], 2); break;
+                    case 8:  obuf_write(OCT_BYTE[by], 3);          break;
+                    case 2:  obuf_write(BIN_BYTE[by], 8);          break;
+                }
+            }
+        } else {
+            for (size_t i = a_len; i > 0; i--) {
+                unsigned char by = a[i - 1];
+                switch (ospec.base) {
+                    case 16: obuf_write((char *)&HEX_PAIR[by], 2); break;
+                    case 8:  obuf_write(OCT_BYTE[by], 3);          break;
+                    case 2:  obuf_write(BIN_BYTE[by], 8);          break;
+                }
+            }
+        }
+        obuf_flush();
+    }
+    free(a);
+}
+
 /* ── usage / version ─────────────────────────────────────────────────────── */
 
 static void usage(int status)
@@ -493,6 +572,8 @@ static void usage(int status)
 "\n"
 "  -i BASE   input base  (default: raw bytes)\n"
 "  -o BASE   output base (default: raw bytes)\n"
+"  -x        xor mode: read 'A:B' from stdin, xor decoded bytes\n"
+"            (requires -i; A and B must decode to equal length)\n"
 "  -h, --help    display this help and exit\n"
 "  -V, --version output version information and exit\n"
 "\n"
@@ -505,16 +586,17 @@ static void usage(int status)
 "Bases 2, 8, 16 operate byte-by-byte; endianness controls byte order.\n"
 "\n"
 "Examples:\n"
-"  echo -n 'test'     | %s -o 16\n"
-"  echo -n 'test'     | %s -o 16le\n"
-"  echo -n '74657374' | %s -i 16\n"
-"  echo -n 'ff'       | %s -i 16 -o 10\n"
-"  echo -n 'test'     | %s -o 10le\n"
-"  echo -n '255'      | %s -i 10 -o 16\n"
+"  echo -n 'test'              | %s -o 16\n"
+"  echo -n 'test'              | %s -o 16le\n"
+"  echo -n '74657374'          | %s -i 16\n"
+"  echo -n 'ff'                | %s -i 16 -o 10\n"
+"  echo -n 'test'              | %s -o 10le\n"
+"  echo -n '255'               | %s -i 10 -o 16\n"
+"  echo -n '74657374:01020304' | %s -i 16 -x -o 16\n"
 "\n",
     PROGRAM_NAME,
     PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME,
-    PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME);
+    PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME);
     exit(status);
 }
 
@@ -537,7 +619,7 @@ int main(int argc, char *argv[])
 
     basespec ispec = {0, 'b'};
     basespec ospec = {0, 'b'};
-    int i_set = 0, o_set = 0;
+    int i_set = 0, o_set = 0, x_set = 0;
 
     static struct option long_opts[] = {
         { "help",    no_argument, NULL, 'h' },
@@ -546,7 +628,7 @@ int main(int argc, char *argv[])
     };
 
     int c;
-    while ((c = getopt_long(argc, argv, "i:o:hV", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:hVx", long_opts, NULL)) != -1) {
         switch (c) {
             case 'i':
                 if (parse_base(optarg, &ispec) != 0)
@@ -558,6 +640,7 @@ int main(int argc, char *argv[])
                     die_fmt("invalid base: %s", optarg);
                 o_set = 1;
                 break;
+            case 'x': x_set = 1; break;
             case 'h': usage(EXIT_SUCCESS); break;
             case 'V': version(); break;
             default:  usage(EXIT_FAILURE);
@@ -571,6 +654,14 @@ int main(int argc, char *argv[])
     }
 
     /* ── dispatch ── */
+
+    /* xor mode: requires -i (no raw support) */
+    if (x_set) {
+        if (!i_set) die("-x requires -i");
+        do_xor(ispec, ospec, o_set);
+        if (isatty(STDOUT_FILENO)) putchar('\n');
+        return EXIT_SUCCESS;
+    }
 
     /* both base10: pure numeric */
     if (i_set && ispec.base == 10 && o_set && ospec.base == 10) {
