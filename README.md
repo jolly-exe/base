@@ -16,7 +16,9 @@ echo -n "test" | base -o 16
 
 ## Install
 
-**System-wide:**
+**Prebuilt binaries** for Linux (glibc/musl, x86_64/aarch64/i686), Windows (x86_64), and macOS (x86_64/aarch64) are available on the [releases page](https://github.com/jolly-exe/base/releases).
+
+**System-wide (from source):**
 ```sh
 git clone https://github.com/jolly-exe/base
 cd base
@@ -33,8 +35,6 @@ mkdir -p ~/.local/bin
 install -m755 base ~/.local/bin/
 ```
 
-Make sure `~/.local/bin` is in your `PATH` (add it to your shell's rc file, e.g. `~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`).
-
 **Termux:**
 ```sh
 git clone https://github.com/jolly-exe/base
@@ -42,6 +42,8 @@ cd base
 clang -O2 -o base base.c
 install -m755 base ~/../usr/bin/
 ```
+
+Make sure `~/.local/bin` is in your `PATH` (add it to your shell's rc file, e.g. `~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`).
 
 To uninstall:
 - System-wide: `sudo rm /usr/local/bin/base`
