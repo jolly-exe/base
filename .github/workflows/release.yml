@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get.outputs.version }}
+      tag_exists: ${{ steps.check.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from base.c
+        id: get
+        run: |
+          VERSION=$(grep -oP '(?<=#define VERSION ")[^"]+' base.c)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.get.outputs.version }}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.tag_exists == 'false'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux glibc static
+          - os: ubuntu-latest
+            target: linux-glibc-x86_64
+            cc: gcc
+            cflags: -O2 -static
+            arch_pkg: ""
+
+          - os: ubuntu-latest
+            target: linux-glibc-aarch64
+            cc: aarch64-linux-gnu-gcc
+            cflags: -O2 -static
+            arch_pkg: gcc-aarch64-linux-gnu
+
+          - os: ubuntu-latest
+            target: linux-glibc-i686
+            cc: i686-linux-gnu-gcc
+            cflags: -O2 -static
+            arch_pkg: gcc-i686-linux-gnu
+
+          # Linux musl static
+          - os: ubuntu-latest
+            target: linux-musl-x86_64
+            cc: x86_64-linux-musl-gcc
+            cflags: -O2 -static
+            arch_pkg: musl-tools
+
+          - os: ubuntu-latest
+            target: linux-musl-aarch64
+            cc: aarch64-linux-musl-gcc
+            cflags: -O2 -static
+            arch_pkg: musl-cross
+
+          - os: ubuntu-latest
+            target: linux-musl-i686
+            cc: i686-linux-musl-gcc
+            cflags: -O2 -static
+            arch_pkg: musl-cross
+
+          # Windows (cross-compiled via mingw)
+          - os: ubuntu-latest
+            target: windows-x86_64
+            cc: x86_64-w64-mingw32-gcc
+            cflags: -O2 -static
+            arch_pkg: gcc-mingw-w64-x86-64
+            ext: .exe
+
+          - os: ubuntu-latest
+            target: windows-aarch64
+            cc: aarch64-w64-mingw32-gcc
+            cflags: -O2 -static
+            arch_pkg: gcc-mingw-w64-aarch64
+            ext: .exe
+
+          # macOS
+          - os: macos-13
+            target: macos-x86_64
+            cc: gcc
+            cflags: -O2
+
+          - os: macos-latest
+            target: macos-aarch64
+            cc: gcc
+            cflags: -O2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compiler
+        if: matrix.arch_pkg != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ${{ matrix.arch_pkg }}
+
+      - name: Build
+        run: |
+          ${{ matrix.cc }} ${{ matrix.cflags }} -o base-${{ matrix.target }}${{ matrix.ext }} base.c
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-${{ matrix.target }}
+          path: base-${{ matrix.target }}${{ matrix.ext }}
+
+  release:
+    needs: [check-version, build]
+    if: needs.check-version.outputs.tag_exists == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV=$(git tag --sort=-version:refname | head -n1)
+          if [ -z "$PREV" ]; then
+            LOG=$(git log --pretty=format:"- %s" | head -20)
+          else
+            LOG=$(git log "$PREV"..HEAD --pretty=format:"- %s")
+          fi
+          echo "changelog<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: artifacts/*
