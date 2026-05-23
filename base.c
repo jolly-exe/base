@@ -678,7 +678,7 @@ int main(int argc, char *argv[])
     };
 
     int c;
-    while ((c = getopt_long(argc, argv, "i:o:I:O:X:hVx", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, ":i:o:I:O:X:hVx", long_opts, NULL)) != -1) {
         switch (c) {
             case 'i':
                 if (parse_base(optarg, &ispec) != 0)
@@ -696,7 +696,8 @@ int main(int argc, char *argv[])
             case 'X': xor_path = optarg;  break;
             case 'h': usage(EXIT_SUCCESS); break;
             case 'V': version(); break;
-            default:  usage(EXIT_FAILURE);
+            case ':': { char o[3] = {'-', (char)optopt, '\0'}; die_fmt("option requires an argument: %s", o); break; }
+            default:  { char o[3] = {'-', (char)optopt, '\0'}; die_fmt("unknown option: %s", o); break; }
         }
     }
 
