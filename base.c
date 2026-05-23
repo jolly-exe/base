@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 #define PROGRAM_NAME "base"
-#define VERSION "1.0"
+#define VERSION "1.1"
 
 /* I/O buffer sizes — large enough to amortize syscall overhead */
 #define IN_BUF_SIZE  (1 << 17)   /* 128 KiB read chunks */
@@ -161,25 +161,39 @@ static int parse_base(const char *s, basespec *out)
 
 /* ── dynamic stdin reader (for paths that need full buffer) ──────────────── */
 
-static unsigned char *read_stdin_full(size_t *out_len)
+static unsigned char *read_stream_full(FILE *f, const char *name, size_t *out_len)
 {
     size_t cap = IN_BUF_SIZE;
     size_t len = 0;
     unsigned char *buf = malloc(cap);
-    if (!buf) { perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    if (!buf) { perror(name); exit(EXIT_FAILURE); }
 
     size_t n;
-    while ((n = fread(buf + len, 1, cap - len, stdin)) > 0) {
+    while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
         len += n;
         if (len == cap) {
             cap *= 2;
             unsigned char *tmp = realloc(buf, cap);
-            if (!tmp) { free(buf); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+            if (!tmp) { free(buf); perror(name); exit(EXIT_FAILURE); }
             buf = tmp;
         }
     }
-    if (ferror(stdin)) { free(buf); perror(PROGRAM_NAME); exit(EXIT_FAILURE); }
+    if (ferror(f)) { free(buf); perror(name); exit(EXIT_FAILURE); }
     *out_len = len;
+    return buf;
+}
+
+static inline unsigned char *read_stdin_full(size_t *out_len)
+{
+    return read_stream_full(stdin, PROGRAM_NAME, out_len);
+}
+
+static unsigned char *read_file_full(const char *path, size_t *out_len)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) { perror(path); exit(EXIT_FAILURE); }
+    unsigned char *buf = read_stream_full(f, path, out_len);
+    fclose(f);
     return buf;
 }
 
@@ -483,39 +497,67 @@ static void numeric_convert(const unsigned char *in_buf, size_t in_len,
     obuf_flush();
 }
 
-/* ── xor mode (base only, no raw) ────────────────────────────────────────── */
+/* ── xor mode ────────────────────────────────────────────────────────────── */
 
-static void do_xor(basespec ispec, basespec ospec, int o_set)
+static void do_xor(basespec ispec, basespec ospec, int i_set, int o_set,
+                   const char *xor_path)
 {
-    size_t in_len;
-    unsigned char *in_buf = read_stdin_full(&in_len);
-
-    /* find first ':' delimiter; subsequent ':' are invalid → ignored */
-    size_t split = (size_t)-1;
-    for (size_t i = 0; i < in_len; i++) {
-        if (in_buf[i] == ':') { split = i; break; }
-    }
-    if (split == (size_t)-1) {
-        free(in_buf);
-        die("-x requires two values separated by ':'");
-    }
-
-    unsigned char *left  = in_buf;
-    size_t left_len      = split;
-    unsigned char *right = in_buf + split + 1;
-    size_t right_len     = in_len - split - 1;
-
     size_t a_len, b_len;
     unsigned char *a, *b;
 
-    if (ispec.base == 10) {
-        a = decode_base10(left,  left_len,  ispec.endian, &a_len);
-        b = decode_base10(right, right_len, ispec.endian, &b_len);
+    if (xor_path) {
+        /* Two-operand mode: first from stdin (or --input via freopen),
+           second from --xor-file. No ':' parsing. Raw OK if -i not set. */
+        size_t in_len, xf_len;
+        unsigned char *in_buf = read_stdin_full(&in_len);
+        unsigned char *xf_buf = read_file_full(xor_path, &xf_len);
+
+        if (i_set) {
+            if (ispec.base == 10) {
+                a = decode_base10(in_buf, in_len, ispec.endian, &a_len);
+                b = decode_base10(xf_buf, xf_len, ispec.endian, &b_len);
+            } else {
+                a = decode_buf(in_buf, in_len, ispec, &a_len);
+                b = decode_buf(xf_buf, xf_len, ispec, &b_len);
+            }
+            free(in_buf);
+            free(xf_buf);
+        } else {
+            /* raw bytes: use buffers directly */
+            a = in_buf; a_len = in_len;
+            b = xf_buf; b_len = xf_len;
+        }
     } else {
-        a = decode_buf(left,  left_len,  ispec, &a_len);
-        b = decode_buf(right, right_len, ispec, &b_len);
+        /* Stdin-with-colon mode: requires -i (raw can't be split by ':') */
+        if (!i_set) die("-x without -X requires -i");
+
+        size_t in_len;
+        unsigned char *in_buf = read_stdin_full(&in_len);
+
+        /* find first ':' delimiter; subsequent ':' are invalid → ignored */
+        size_t split = (size_t)-1;
+        for (size_t i = 0; i < in_len; i++) {
+            if (in_buf[i] == ':') { split = i; break; }
+        }
+        if (split == (size_t)-1) {
+            free(in_buf);
+            die("-x requires two values separated by ':' (or use -X)");
+        }
+
+        unsigned char *left  = in_buf;
+        size_t left_len      = split;
+        unsigned char *right = in_buf + split + 1;
+        size_t right_len     = in_len - split - 1;
+
+        if (ispec.base == 10) {
+            a = decode_base10(left,  left_len,  ispec.endian, &a_len);
+            b = decode_base10(right, right_len, ispec.endian, &b_len);
+        } else {
+            a = decode_buf(left,  left_len,  ispec, &a_len);
+            b = decode_buf(right, right_len, ispec, &b_len);
+        }
+        free(in_buf);
     }
-    free(in_buf);
 
     if (a_len != b_len) {
         free(a); free(b);
@@ -570,10 +612,14 @@ static void usage(int status)
 "Convert between raw bytes and base 2, 8, 10, or 16.\n"
 "Reads from standard input, writes to standard output.\n"
 "\n"
-"  -i BASE   input base  (default: raw bytes)\n"
-"  -o BASE   output base (default: raw bytes)\n"
-"  -x        xor mode: read 'A:B' from stdin, xor decoded bytes\n"
-"            (requires -i; A and B must decode to equal length)\n"
+"  -i BASE       input base  (default: raw bytes)\n"
+"  -o BASE       output base (default: raw bytes)\n"
+"  -x            xor mode: read 'A:B' from stdin, xor decoded bytes\n"
+"                (requires -i; A and B must decode to equal length)\n"
+"  -I FILE       read input from FILE instead of stdin\n"
+"  -O FILE       write output to FILE instead of stdout\n"
+"  -X FILE       second xor operand from FILE\n"
+"                requires -x; skips ':' parsing; raw input allowed\n"
 "  -h, --help    display this help and exit\n"
 "  -V, --version output version information and exit\n"
 "\n"
@@ -593,10 +639,13 @@ static void usage(int status)
 "  echo -n 'test'              | %s -o 10le\n"
 "  echo -n '255'               | %s -i 10 -o 16\n"
 "  echo -n '74657374:01020304' | %s -i 16 -x -o 16\n"
+"  %s -I file -O file.hex -o 16\n"
+"  %s -x -I data.bin -X key.bin -O out.bin\n"
 "\n",
     PROGRAM_NAME,
     PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME,
-    PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME);
+    PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME, PROGRAM_NAME,
+    PROGRAM_NAME, PROGRAM_NAME);
     exit(status);
 }
 
@@ -620,15 +669,16 @@ int main(int argc, char *argv[])
     basespec ispec = {0, 'b'};
     basespec ospec = {0, 'b'};
     int i_set = 0, o_set = 0, x_set = 0;
+    const char *in_path = NULL, *out_path = NULL, *xor_path = NULL;
 
     static struct option long_opts[] = {
-        { "help",    no_argument, NULL, 'h' },
-        { "version", no_argument, NULL, 'V' },
+        { "help",       no_argument,       NULL, 'h' },
+        { "version",    no_argument,       NULL, 'V' },
         { NULL, 0, NULL, 0 }
     };
 
     int c;
-    while ((c = getopt_long(argc, argv, "i:o:hVx", long_opts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "i:o:I:O:X:hVx", long_opts, NULL)) != -1) {
         switch (c) {
             case 'i':
                 if (parse_base(optarg, &ispec) != 0)
@@ -640,7 +690,10 @@ int main(int argc, char *argv[])
                     die_fmt("invalid base: %s", optarg);
                 o_set = 1;
                 break;
-            case 'x': x_set = 1; break;
+            case 'x': x_set    = 1;       break;
+            case 'I': in_path  = optarg;  break;
+            case 'O': out_path = optarg;  break;
+            case 'X': xor_path = optarg;  break;
             case 'h': usage(EXIT_SUCCESS); break;
             case 'V': version(); break;
             default:  usage(EXIT_FAILURE);
@@ -653,12 +706,30 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    /* validate file-flag combinations */
+    if (xor_path && !x_set)
+        die("-X requires -x");
+    if (x_set && in_path && !xor_path)
+        die("-x with -I requires -X");
+
+    /* redirect stdin/stdout to files if requested — all downstream code
+       that uses stdin/stdout transparently works on the files instead */
+    if (in_path) {
+        if (!freopen(in_path, "rb", stdin)) {
+            perror(in_path); exit(EXIT_FAILURE);
+        }
+    }
+    if (out_path) {
+        if (!freopen(out_path, "wb", stdout)) {
+            perror(out_path); exit(EXIT_FAILURE);
+        }
+    }
+
     /* ── dispatch ── */
 
-    /* xor mode: requires -i (no raw support) */
+    /* xor mode */
     if (x_set) {
-        if (!i_set) die("-x requires -i");
-        do_xor(ispec, ospec, o_set);
+        do_xor(ispec, ospec, i_set, o_set, xor_path);
         if (isatty(STDOUT_FILENO)) putchar('\n');
         return EXIT_SUCCESS;
     }
@@ -745,12 +816,23 @@ int main(int argc, char *argv[])
         size_t raw_len;
         unsigned char *raw = decode_buf(in_buf, in_len, ispec, &raw_len);
         free(in_buf);
-        for (size_t i = 0; i < raw_len; i++) {
-            unsigned char b = raw[i];
-            switch (ospec.base) {
-                case 16: obuf_write((char *)&HEX_PAIR[b], 2); break;
-                case 8:  obuf_write(OCT_BYTE[b], 3); break;
-                case 2:  obuf_write(BIN_BYTE[b], 8); break;
+        if (ospec.endian == 'b') {
+            for (size_t i = 0; i < raw_len; i++) {
+                unsigned char b = raw[i];
+                switch (ospec.base) {
+                    case 16: obuf_write((char *)&HEX_PAIR[b], 2); break;
+                    case 8:  obuf_write(OCT_BYTE[b], 3); break;
+                    case 2:  obuf_write(BIN_BYTE[b], 8); break;
+                }
+            }
+        } else {
+            for (size_t i = raw_len; i > 0; i--) {
+                unsigned char b = raw[i - 1];
+                switch (ospec.base) {
+                    case 16: obuf_write((char *)&HEX_PAIR[b], 2); break;
+                    case 8:  obuf_write(OCT_BYTE[b], 3); break;
+                    case 2:  obuf_write(BIN_BYTE[b], 8); break;
+                }
             }
         }
         free(raw);
