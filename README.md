@@ -1,3 +1,6 @@
+### repo moved to:
+https://git.maws.lol/jolly/base
+
 # base
 
 Convert between raw bytes and base 2, 8, 10, or 16.
